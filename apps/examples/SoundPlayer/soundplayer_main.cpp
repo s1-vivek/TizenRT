@@ -43,6 +43,7 @@ using namespace media::stream;
 #define DEFAULT_SAMPLERATE_TYPE AUDIO_SAMPLE_RATE_24000
 #define DEFAULT_FORMAT_TYPE AUDIO_FORMAT_TYPE_S16_LE
 #define DEFAULT_CHANNEL_NUM 1 //mono
+extern int toDumpData;
 
 int gPlaybackFinished;
 //***************************************************************************
@@ -54,7 +55,8 @@ class SoundPlayer : public MediaPlayerObserverInterface,
 					  public enable_shared_from_this<SoundPlayer>
 {
 public:
-	SoundPlayer() : volume(0), mNumContents(0), mPlayIndex(-1), mHasFocus(false), mSampleRate(DEFAULT_SAMPLERATE_TYPE) {};
+	SoundPlayer() : volume(0), mNumContents(0), mPlayIndex(-1), mHasFocus(false), mSampleRate(DEFAULT_SAMPLERATE_TYPE), 
+							mChannel(DEFAULT_CHANNEL_NUM) {};
 	~SoundPlayer() {};
 	bool init(char *argv[]);
 	bool startPlayback(void);
@@ -77,6 +79,8 @@ private:
 	unsigned int mPlayIndex;
 	bool mHasFocus;
 	unsigned int mSampleRate;
+	unsigned int mChannel;
+
 	void loadContents(const char *path);
 };
 
@@ -214,6 +218,8 @@ bool SoundPlayer::init(char *argv[])
 						.build();
 
 	mSampleRate = atoi(argv[3]);
+	mChannel = atoi(argv[4]);
+	toDumpData = atoi(argv[5]);
 	return true;
 }
 
@@ -224,7 +230,7 @@ bool SoundPlayer::startPlayback(void)
 	printf("startPlayback... playIndex : %d path : %s\n", mPlayIndex, s.c_str());
 	auto source = std::move(unique_ptr<FileInputDataSource>(new FileInputDataSource((const string)s)));
 	source->setSampleRate(mSampleRate);
-	source->setChannels(DEFAULT_CHANNEL_NUM);
+	source->setChannels(mChannel);
 	source->setPcmFormat(DEFAULT_FORMAT_TYPE);
 	res = mp.setDataSource(std::move(source));
 	if (res != PLAYER_OK) {
@@ -285,7 +291,7 @@ extern "C" {
 int soundplayer_main(int argc, char *argv[])
 {
 	auto player = std::shared_ptr<SoundPlayer>(new SoundPlayer());
-	if (argc != 4) {
+	if (argc != 6) {
 		printf("invalid input\n");
 		return -1;
 	}

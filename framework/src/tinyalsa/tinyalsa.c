@@ -99,6 +99,19 @@
 #include <time.h>
 #include <limits.h>
 
+int toDumpData;
+#define DUMP_DATA 1
+#ifdef DUMP_DATA
+#define MNT_FILE_PATH "/mnt/record"
+#define FILE_EXTENSION ".pcm"
+#define FILE_NAME_SIZE 20
+static char file_name[FILE_NAME_SIZE];
+static int file_no = 0;
+static FILE *gPCMFile;
+static int total_received_data = 0;
+static int total_written_data = 0;
+#endif
+
 #define __force
 #define __bitwise
 #define __user
@@ -498,6 +511,17 @@ int pcm_writei(struct pcm *pcm, const void *data, unsigned int frame_count)
 
 	pending = pcm_frames_to_bytes(pcm, frame_count);
 
+#ifdef DUMP_DATA
+	if (toDumpData) {
+		total_received_data += pending;
+		if (gPCMFile != NULL) {
+			int sz_written = fwrite(data, sizeof(unsigned char), pending, gPCMFile);
+			printf("[LOG_DATA_DUMP] Audio data dump write operation done, total size written: %d\n", sz_written);
+			total_written_data += sz_written;
+		}
+	}
+#endif
+
 	while (pending > 0) {
 		nbytes = pending > pcm_frames_to_bytes(pcm, pcm->buffer_size) ? pcm_frames_to_bytes(pcm, pcm->buffer_size) : pending;
 		if (pcm->buf_idx < pcm->buffer_cnt) {
@@ -774,6 +798,16 @@ int pcm_close(struct pcm *pcm)
 	close(pcm->fd);
 
 	free(pcm);
+#ifdef DUMP_DATA
+	if (toDumpData) {
+		if (gPCMFile) {
+			fclose(gPCMFile);
+		}
+		printf("[LOG_DATA_DUMP] Total Audio data received size: %d\n", total_received_data);
+		printf("[LOG_DATA_DUMP] Total Audio data dumped size: %d\n", total_written_data);
+		file_no++;
+	}
+#endif
 	return 0;
 }
 
@@ -932,6 +966,18 @@ struct pcm *pcm_open(unsigned int card, unsigned int device, unsigned int flags,
 	pcm->next_offset = 0;
 	pcm->next_buf = NULL;
 	pcm->mmap_idx = 0;
+
+#ifdef DUMP_DATA
+	if (toDumpData) {
+		snprintf(file_name, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, FILE_EXTENSION);
+		gPCMFile = fopen(file_name, "wb");
+		if (gPCMFile == NULL) {
+			printf("[LOG_DATA_DUMP] Error!! Audio data dump file open failed\n");
+		}
+		total_received_data = 0;
+		total_written_data = 0;
+	}
+#endif
 
 	return pcm;
 
