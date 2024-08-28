@@ -531,7 +531,11 @@ CONFIG_AUDIO_KEYWORD_DETECT=y
 # CONFIG_AUDIO_NULL is not set
 # CONFIG_AUDIO_CX20921 is not set
 CONFIG_AUDIO_ALC1019=y
+<<<<<<< HEAD
 # CONFIG_AUDIO_SYU645B is not set
+=======
+#CONFIG_AUDIO_SYU645B is not set
+>>>>>>> 88d5e4d6e... Add code for dumping audio data on board and playing on PC.
 CONFIG_AUDIO_NDP120=y
 # CONFIG_AUDIO_TAS5749 is not set
 # CONFIG_DRIVERS_VIDEO is not set

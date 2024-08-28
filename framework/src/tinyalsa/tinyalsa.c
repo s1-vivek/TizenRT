@@ -99,6 +99,13 @@
 #include <time.h>
 #include <limits.h>
 
+#define SHARE_NETWORK_DATA 1
+#ifdef SHARE_NETWORK_DATA
+extern int toShareData;
+extern int player_client_fd;
+static int total_received_data = 0;
+#endif
+
 #define __force
 #define __bitwise
 #define __user
@@ -497,6 +504,18 @@ int pcm_writei(struct pcm *pcm, const void *data, unsigned int frame_count)
 	}
 
 	pending = pcm_frames_to_bytes(pcm, frame_count);
+
+#ifdef SHARE_NETWORK_DATA
+	if (toShareData) {
+		total_received_data += pending;
+		printf("[pcm_writei] send data size %d\n", pending);
+		int network_data = htonl(pending);
+		int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);
+		size_t sent_bytes = send(player_client_fd, (char *)data, pending, 0);
+		printf("Sent data %d\n", sent_bytes);
+	}
+#endif
+
 	while (pending > 0) {
 		if (pcm->next_buf != NULL) {
 			apb = pcm->next_buf;
@@ -784,6 +803,12 @@ int pcm_close(struct pcm *pcm)
 	close(pcm->fd);
 
 	free(pcm);
+#ifdef SHARE_NETWORK_DATA
+	if (toShareData) {
+		printf("[LOG_DATA_DUMP] Total Audio data received size: %d\n", total_received_data);
+		total_received_data = 0;
+	}
+#endif
 	return 0;
 }
 

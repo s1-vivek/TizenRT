@@ -34,10 +34,21 @@
 #include <dirent.h>
 #include <limits.h>
 #include <vector>
+#define SOUND_PLAYER_LIVE_DATA
+#if defined SOUND_PLAYER_LIVE_DATA
+#include <sys/socket.h>
+#include <net/if.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
 
-using namespace std;
 using namespace media;
 using namespace media::stream;
+
+#if defined SOUND_PLAYER_LIVE_DATA
+#define LIVE_DATA_PORT 5557
+#define SOUND_PLAYER_PACKET_LENGTH 2048
+#endif
 
 #define DEFAULT_CONTENTS_PATH "/mnt"
 #define DEFAULT_SAMPLERATE_TYPE AUDIO_SAMPLE_RATE_24000
@@ -46,16 +57,68 @@ using namespace media::stream;
 
 static int gPlaybackFinished;
 static int gAllTrackPlayed;
+
+#if defined SOUND_PLAYER_LIVE_DATA
+static int server_fd;
+int player_client_fd;
+int toShareData;
+#endif
+
+#if defined SOUND_PLAYER_LIVE_DATA
+int live_player_data_share_setup() {
+	struct sockaddr_in address;
+	int opt = 1;
+	int addrlen = sizeof(address);
+
+	/* Creating socket file descriptor */
+	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		printf("failed to fetch a socket fd\n");
+		return 0;
+	}
+
+	/* Forcefully attaching socket to the port */
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+		printf("setting socket options failed\n");
+		return 0;
+	}
+
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_ANY);
+	address.sin_port = htons(LIVE_DATA_PORT);
+	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+		printf("binding socket failed\n");
+		return 0;
+	}
+
+	/* lets wait for client to connect */
+	printf("Waiting for client to connect............\n");
+	if (listen(server_fd, 3) < 0) {
+		printf("listening on socket failed\n");
+		return 0;
+	}
+
+	if ((player_client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
+		printf("failed to accept connection\n");
+		return 0;
+	}
+
+	printf("Client connected, received acknowledgment\n");
+	/* Connection with client established*/
+	return 0;	
+}
+#endif
+
 //***************************************************************************
 // class : SoundPlayer
 //***************************************************************************/
 
 class SoundPlayer : public MediaPlayerObserverInterface,
 					  public FocusChangeListener,
-					  public enable_shared_from_this<SoundPlayer>
+					  public std::enable_shared_from_this<SoundPlayer>
 {
 public:
-	SoundPlayer() : volume(0), mNumContents(0), mPlayIndex(-1), mHasFocus(false), mSampleRate(DEFAULT_SAMPLERATE_TYPE) {};
+	SoundPlayer() : volume(0), mNumContents(0), mPlayIndex(-1), mHasFocus(false), mSampleRate(DEFAULT_SAMPLERATE_TYPE), 
+							mChannel(DEFAULT_CHANNEL_NUM) {};
 	~SoundPlayer() {};
 	bool init(char *argv[]);
 	bool startPlayback(void);
@@ -72,12 +135,14 @@ public:
 private:
 	MediaPlayer mp;
 	uint8_t volume;
-	shared_ptr<FocusRequest> mFocusRequest;
-	vector<string> mList;
+	std::shared_ptr<FocusRequest> mFocusRequest;
+	std::vector<std::string> mList;
 	unsigned int mNumContents;
 	unsigned int mPlayIndex;
 	bool mHasFocus;
 	unsigned int mSampleRate;
+	unsigned int mChannel;
+
 	void loadContents(const char *path);
 };
 
@@ -90,11 +155,24 @@ void SoundPlayer::onPlaybackStarted(MediaPlayer &mediaPlayer)
 void SoundPlayer::onPlaybackFinished(MediaPlayer &mediaPlayer)
 {
 	printf("onPlaybackFinished playback index : %d\n", mPlayIndex);
+#if defined SOUND_PLAYER_LIVE_DATA
+		if (toShareData == 1) {
+			int size = 0;
+			int network_data = htonl(size);
+			int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);	
+		}
+#endif	
 	mPlayIndex++;
 	if (mPlayIndex == mNumContents) {
 		gAllTrackPlayed = true;
 		auto &focusManager = FocusManager::getFocusManager();
 		focusManager.abandonFocus(mFocusRequest);
+#if defined SOUND_PLAYER_LIVE_DATA
+		if (toShareData == 1) {
+			close(player_client_fd);
+			shutdown(server_fd, SHUT_RDWR);
+		}
+#endif
 		return;
 	}
 	printf("wait 3s until play next contents\n");
@@ -186,7 +264,7 @@ bool SoundPlayer::init(char *argv[])
 	if (S_ISDIR(st.st_mode)) {
 		loadContents(path);
 	} else {
-		string s = path;
+		std::string s = path;
 		mList.push_back(s);
 	}
 
@@ -221,17 +299,25 @@ bool SoundPlayer::init(char *argv[])
 
 	mSampleRate = atoi(argv[3]);
 	gAllTrackPlayed = false;
+	mChannel = atoi(argv[4]);
+	toShareData = atoi(argv[5]);
+	if (toShareData) {
+		live_player_data_share_setup();
+		printf("Number of files to play: %d\n", mNumContents);
+		int network_data = htonl(mNumContents);
+		int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);	
+	}
 	return true;
 }
 
 bool SoundPlayer::startPlayback(void)
 {
 	player_result_t res;
-	string s = mList.at(mPlayIndex);
+	std::string s = mList.at(mPlayIndex);
 	printf("startPlayback... playIndex : %d path : %s\n", mPlayIndex, s.c_str());
-	auto source = std::move(unique_ptr<FileInputDataSource>(new FileInputDataSource((const string)s)));
+	auto source = std::move(std::unique_ptr<FileInputDataSource>(new FileInputDataSource((const std::string)s)));
 	source->setSampleRate(mSampleRate);
-	source->setChannels(DEFAULT_CHANNEL_NUM);
+	source->setChannels(mChannel);
 	source->setPcmFormat(DEFAULT_FORMAT_TYPE);
 	res = mp.setDataSource(std::move(source));
 	if (res != PLAYER_OK) {
@@ -278,7 +364,7 @@ void SoundPlayer::loadContents(const char *dirpath)
 			loadContents(path);
 		} else {
 			/* this entry is a file, add it to list. */
-			string s = path;
+			std::string s = path;
 			audio_type_t type = utils::getAudioTypeFromPath(s);
 			if (type != AUDIO_TYPE_INVALID) {
 				mList.push_back(s);
@@ -292,7 +378,7 @@ extern "C" {
 int soundplayer_main(int argc, char *argv[])
 {
 	auto player = std::shared_ptr<SoundPlayer>(new SoundPlayer());
-	if (argc != 4) {
+	if (argc != 6) {
 		printf("invalid input\n");
 		return -1;
 	}
