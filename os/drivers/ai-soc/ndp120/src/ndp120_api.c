@@ -78,7 +78,7 @@
 #define AUDIO_BEFORE_MATCH_MS	(1500)
 
 /* when defined, the let the NDP use an external PDM clock */
-#define USE_EXTERNAL_PDM_CLOCK
+// #define USE_EXTERNAL_PDM_CLOCK
 #define EXTERNAL_PDM_CLOCK_PDM_RATE 1536000
 
 /* this is the higher bound of the keyword length, it will be rounded down to multiple of frame size */

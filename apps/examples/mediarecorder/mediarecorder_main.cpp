@@ -28,12 +28,15 @@
 #include <media/FileOutputDataSource.h>
 #include <media/BufferOutputDataSource.h>
 #include <media/FileInputDataSource.h>
+#include <media/voice/SpeechDetector.h>
+#include <media/voice/SpeechDetectorListenerInterface.h>
 #include <iostream>
 #include <memory>
 
 using namespace std;
 using namespace media;
 using namespace media::stream;
+using namespace media::voice;
 
 static const int TEST_MEDIATYPE_PCM = 0;
 static const int TEST_MEDIATYPE_OPUS = 1;
@@ -405,6 +408,11 @@ extern "C" {
 int mediarecorder_main(int argc, char *argv[])
 {
 	auto mediaRecorderTest = make_shared<MediaRecorderTest>();
+	media::voice::SpeechDetector *sd = media::voice::SpeechDetector::instance();
+	if (!sd->initKeywordDetect(16000, 1)) {
+		printf("#### [SD] init failed.\n");
+		return 0;
+	}
 	mediaRecorderTest->start(TEST_MEDIATYPE_PCM, TEST_DATASOURCE_TYPE_FILE);
 
 	return 0;
