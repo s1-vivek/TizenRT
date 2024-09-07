@@ -1,0 +1,15 @@
+#
+# For a description of the syntax of this configuration file,
+# see kconfig-language at https://www.kernel.org/doc/Documentation/kbuild/kconfig-language.txt
+#
+
+config EXAMPLES_SOUNDRECORDER
+	bool "Sound Recorder"
+	default n
+	depends on HAVE_CXX
+	---help---
+		Enable Sound Recorder application
+
+config USER_ENTRYPOINT
+	string
+	default "soundrecorder_main" if ENTRY_SOUNDRECORDER
