@@ -60,6 +60,7 @@ static int mMediaType;
 static int mDataSourceType;
 static int firstuse = true;
 static int newVolume;
+static int isRecording = false;
 
 media::MediaRecorder soundRec;
 
@@ -94,6 +95,7 @@ class SoundRecorderObserver : public media::MediaRecorderObserverInterface, publ
 		}
 		soundRec.unprepare();
 		soundRec.destroy();
+		isRecording = false;
 		file_no++;
 	}
 	void onRecordStartError(media::MediaRecorder &mediaRecorder, media::recorder_error_t errCode) override
@@ -146,14 +148,14 @@ void get_max_volume()
 	}
 }
 
-void startRecord(void)
+bool startRecord(void)
 {
 	media::recorder_result_t mret = soundRec.create();
 	if (mret == media::RECORDER_OK) {
 		printf("#### [MR] create succeeded.\n");
 	} else {
 		printf("#### [MR] create failed.\n");
-		return;
+		return false;
 	}
 
 	if (mMediaType == TEST_MEDIATYPE_PCM) {
@@ -176,7 +178,7 @@ void startRecord(void)
 		printf("#### [MR] setDataSource succeeded.\n");
 	} else {
 		printf("#### [MR] setDataSource failed.\n");
-		return;
+		return false;
 	}
 
 	mret = soundRec.setObserver(std::make_shared<SoundRecorderObserver>());
@@ -184,14 +186,14 @@ void startRecord(void)
 		printf("#### [MR] setObserver succeeded.\n");
 	} else {
 		printf("#### [MR] setObserver failed.\n");
-		return;
+		return false;
 	}
 
 	if (soundRec.setDuration(recordTime) == RECORDER_ERROR_NONE && soundRec.prepare() == RECORDER_ERROR_NONE) {
 		printf("#### [MR] prepare succeeded.\n");
 	} else {
 		printf("#### [MR] prepare failed.\n");
-		return;
+		return false;
 	}
 
 	if (firstuse) {
@@ -200,7 +202,14 @@ void startRecord(void)
 	}
 	get_volume();
 	set_volume();
-	soundRec.start();
+	mret = soundRec.start();
+	if (mret == media::RECORDER_OK) {
+		printf("#### [MR] start succeeded.\n");
+		return true;
+	} else {
+		printf("#### [MR] start failed.\n");
+		return false;
+	}
 }
 
 void set_default_setting() {
@@ -323,13 +332,16 @@ void parse_soundrecorder_options(int argc, char *argv[])
 				return;
 			}
 			printf("Let's get some settings:\n");
-            get_recorder_settings(argc, argv);
-        } else if (strncmp(argv[1], "record", 7) == 0) {
+			get_recorder_settings(argc, argv);
+		} else if (strncmp(argv[1], "record", 7) == 0) {
 			if (argc > 2) {
 				printf("Invalid Record Command. Use soundrecorder for usage.\n");
 				return;
 			}
-            startRecord();
+			bool startStatus = startRecord();
+			if (startStatus == true) {
+				isRecording = true;
+			}
         } else if (strncmp(argv[1], "stop", 5) == 0) {
 			if (argc > 2) {
 				printf("Invalid Stop Record Command. Use soundrecorder for usage.\n");
@@ -351,6 +363,9 @@ int soundrecorder_main(int argc, char *argv[])
 		set_default_setting();
 	}
     parse_soundrecorder_options(argc, argv);
+	while(isRecording) {
+		sleep(2);
+	}
     printf("Graceful Exit\n");
 	return 0;
 }
