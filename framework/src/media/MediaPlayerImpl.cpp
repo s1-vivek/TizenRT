@@ -26,7 +26,7 @@
 
 namespace media {
 
-#define LOG_STATE_INFO(state) medvdbg("state at %s[line : %d] : %s\n", __func__, __LINE__, player_state_names[(state)])
+#define LOG_STATE_INFO(state) meddbg("state at %s[line : %d] : %s\n", __func__, __LINE__, player_state_names[(state)])
 #define LOG_STATE_DEBUG(state) meddbg("state at %s[line : %d] : %s\n", __func__, __LINE__, player_state_names[(state)])
 
 MediaPlayerImpl::MediaPlayerImpl(MediaPlayer &player) : mPlayer(player)
