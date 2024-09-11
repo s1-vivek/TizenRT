@@ -49,15 +49,64 @@ using namespace media::voice;
 media::voice::SpeechDetector *sd;
 
 media::MediaPlayer mp;
+media::MediaPlayer himp;
 media::MediaRecorder mr;
 
 static const char *filePath = "";
+static const char *hiFilePath = "";
 FILE *fp;
+FILE *hifp;
 uint8_t *gBuffer = NULL;
 static bool isRecording = true;
+static int gBufferSz;
+static bool work_done = false;
 
 static void playRecordVoice(void);
 static void startRecord(void);
+static void playHiBixby(void);
+
+class Hi_Observer : public media::MediaPlayerObserverInterface, public std::enable_shared_from_this<Hi_Observer>
+{
+	void onPlaybackStarted(media::MediaPlayer &mediaPlayer) override
+	{
+		printf("##################################\n");
+		printf("####    Hi onPlaybackStarted     ####\n");
+		printf("##################################\n");
+	}
+	void onPlaybackFinished(media::MediaPlayer &mediaPlayer) override
+	{
+		printf("##################################\n");
+		printf("####    Hi onPlaybackFinished    ####\n");
+		printf("##################################\n");
+
+		himp.unprepare();
+		himp.destroy();
+
+		printf("##################################\n");
+		printf("####   Hi Playback done!!        ####\n");
+		printf("##################################\n");
+
+		playRecordVoice();
+	}
+	void onPlaybackError(media::MediaPlayer &mediaPlayer, media::player_error_t error) override
+	{
+		printf("##################################\n");
+		printf("####      Hi onPlaybackError     ####\n");
+		printf("##################################\n");
+	}
+	void onStartError(media::MediaPlayer &mediaPlayer, media::player_error_t error) override
+	{
+	}
+	void onStopError(media::MediaPlayer &mediaPlayer, media::player_error_t error) override
+	{
+	}
+	void onPauseError(media::MediaPlayer &mediaPlayer, media::player_error_t error) override
+	{
+	}
+	void onPlaybackPaused(media::MediaPlayer &mediaPlayer) override
+	{
+	}
+};
 
 class _Observer : public media::MediaPlayerObserverInterface, public std::enable_shared_from_this<_Observer>
 {
@@ -83,8 +132,8 @@ class _Observer : public media::MediaPlayerObserverInterface, public std::enable
 		printf("###################################\n");
 		printf("#### Wait for wakeup triggered ####\n");
 		printf("###################################\n");
-
-		sd->startKeywordDetect();
+		work_done = true;
+		//sd->startKeywordDetect();
 	}
 	void onPlaybackError(media::MediaPlayer &mediaPlayer, media::player_error_t error) override
 	{
@@ -114,7 +163,7 @@ class BufferReceiver : public media::MediaRecorderObserverInterface, public std:
 		printf("####     onRecordStarted      ####\n");
 		printf("##################################\n");
 
-		filePath = "/tmp/record.pcm";
+		filePath = "/mnt/record.pcm";
 		fp = fopen(filePath, "wb");
 		if (fp == NULL) {
 			printf("FILE OPEN FAILED\n");
@@ -136,7 +185,7 @@ class BufferReceiver : public media::MediaRecorderObserverInterface, public std:
 		mr.destroy();
 		fclose(fp);
 
-		playRecordVoice();
+		playHiBixby();
 	}
 	void onRecordStartError(media::MediaRecorder &mediaRecorder, media::recorder_error_t errCode) override
 	{
@@ -162,7 +211,7 @@ class BufferReceiver : public media::MediaRecorderObserverInterface, public std:
 
 		short *sdata = (short *)data.get();
 		if (fp != NULL) {
-			int sz_written = fwrite(sdata, sizeof(short), size / 2, fp);
+			int sz_written = fwrite(sdata, sizeof(short), size, fp);
 			printf("\n********Size written to file= %d *********\n", sz_written);
 		}
 	}
@@ -181,6 +230,18 @@ public:
 				if (sd->getKeywordData(gBuffer) == true) {
 					/* consume buffer */
 					printf("KD data extraction OK\n");
+					hiFilePath = "/mnt/hirec.pcm";
+					hifp = fopen(hiFilePath, "wb");
+					if (hifp == NULL) {
+						printf("FILE OPEN FAILED\n");
+						return;
+					}
+					if (hifp != NULL) {
+						int sz_written = fwrite(gBuffer, sizeof(unsigned char), gBufferSz, hifp);
+						printf("Audio data dump write operation done, total size written: %d\n", sz_written);
+						fclose(hifp);
+					}
+					
 				} else {
 					printf("kd data extraction failed\n");
 				}
@@ -234,6 +295,20 @@ void startRecord(void)
 	mr.start();
 }
 
+void playHiBixby(void)
+{
+	himp.create();
+	auto hisource = std::move(unique_ptr<media::stream::FileInputDataSource>(new media::stream::FileInputDataSource(hiFilePath)));
+	hisource->setSampleRate(16000);
+	hisource->setChannels(1);
+	hisource->setPcmFormat(media::AUDIO_FORMAT_TYPE_S16_LE);
+	himp.setObserver(std::make_shared<Hi_Observer>());
+	himp.setDataSource(std::move(hisource));
+	himp.prepare();
+	himp.setVolume(8);
+	himp.start();
+}
+
 void playRecordVoice(void)
 {
 	mp.create();
@@ -244,7 +319,8 @@ void playRecordVoice(void)
 	mp.setObserver(std::make_shared<_Observer>());
 	mp.setDataSource(std::move(source));
 	mp.prepare();
-	mp.setVolume(5);
+	mp.setVolume(8);
+	printf("[Waverec] Just Before start()\n");
 	mp.start();
 }
 
@@ -252,6 +328,7 @@ extern "C" {
 int wakerec_main(int argc, char *argv[])
 {
 	printf("wakerec_main Entry\n");
+	work_done = false;
 	sd = media::voice::SpeechDetector::instance();
 	if (!sd->initKeywordDetect(16000, 1)) {
 		printf("#### [SD] init failed.\n");
@@ -269,18 +346,20 @@ int wakerec_main(int argc, char *argv[])
 	uint32_t bufferSize = 0;
 	if (sd->getKeywordBufferSize(&bufferSize) == true) {
 		printf("KD buffer size %d\n", bufferSize);
+		gBufferSz = bufferSize;
 		gBuffer = new uint8_t[bufferSize];
 		if (!gBuffer) {
 			printf("memory allocation failed\n");
 		}
 	}
 
-	while (1) {
-		sleep(67);
+	while (!work_done) {
+		sleep(5);
 	}
 
 	delete[] gBuffer;
 	gBuffer = NULL;
+	printf("Graceful Exit\n");
 	return 0;
 }
 }
