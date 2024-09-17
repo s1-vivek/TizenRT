@@ -20,14 +20,20 @@
 //***************************************************************************
 
 #include <tinyara/config.h>
-#include <iostream>
+#include <stdio.h>
 #include <string.h>
 #include <media/MediaRecorder.h>
 #include <media/MediaRecorderObserverInterface.h>
 #include <media/FileOutputDataSource.h>
 #include <media/BufferOutputDataSource.h>
+#define SOUND_RECORDER_LIVE_DATA
+#if defined SOUND_RECORDER_LIVE_DATA
+#include <sys/socket.h>
+#include <net/if.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
 
-using namespace std;
 using namespace media;
 using namespace media::stream;
 
@@ -37,15 +43,23 @@ using namespace media::stream;
 #define VOLUME 8
 #define MNT_FILE_PATH "/mnt/soundrecord"
 #define FILE_NAME_SIZE 30
+#if defined SOUND_RECORDER_LIVE_DATA
+#define LIVE_DATA_PORT 5556
+#define SOUND_RECORDER_PACKET_LENGTH 2048
+#endif
 
-static const int TEST_DATASOURCE_TYPE_FILE = 0;
-static const int TEST_DATASOURCE_TYPE_BUFFER = 1;
-const char* datasourcetype[] = {"file", "buffer"};
+static const int TEST_DATASOURCE_TYPE_BUFFER = 0;
+static const int TEST_DATASOURCE_TYPE_FILE = 1;
+const char* datasourcetype[] = {"buffer", "file"};
 
 static const int TEST_MEDIATYPE_PCM = 0;
 static const int TEST_MEDIATYPE_OPUS = 1;
 static const int TEST_MEDIATYPE_WAVE = 2;
 const char* typefile[] = {"pcm", "opus", "wav"};
+
+static const int TEST_REALTIME_TRANSFER_OFF = 0;
+static const int TEST_REALTIME_TRANSFER_ON = 1;
+const char* typeRealTimeTransfer[] = {"off", "on"};
 
 static char filePath[FILE_NAME_SIZE];
 static FILE *gPCMFile = NULL;
@@ -61,8 +75,57 @@ static int mDataSourceType;
 static int firstuse = true;
 static int newVolume;
 static int isRecording = false;
+static int isRealTime = 1;
+#if defined SOUND_RECORDER_LIVE_DATA
+static int server_fd;
+static int client_fd;
+#endif
 
 media::MediaRecorder soundRec;
+
+#if defined SOUND_RECORDER_LIVE_DATA
+int live_data_share_setup() {
+	struct sockaddr_in address;
+	int opt = 1;
+	int addrlen = sizeof(address);
+
+	/* Creating socket file descriptor */
+	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+		printf("failed to fetch a socket fd\n");
+		return 0;
+	}
+
+	/* Forcefully attaching socket to the port */
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+		printf("setting socket options failed\n");
+		return 0;
+	}
+
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_ANY);
+	address.sin_port = htons(LIVE_DATA_PORT);
+	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+		printf("binding socket failed\n");
+		return 0;
+	}
+
+	/* lets wait for client to connect */
+	printf("Waiting for client to connect............\n");
+	if (listen(server_fd, 3) < 0) {
+		printf("listening on socket failed\n");
+		return 0;
+	}
+
+	if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
+		printf("failed to accept connection\n");
+		return 0;
+	}
+
+	printf("Client connected, received acknowledgment\n");
+	/* Connection with client established*/
+	return 0;	
+}
+#endif
 
 class SoundRecorderObserver : public media::MediaRecorderObserverInterface, public std::enable_shared_from_this<SoundRecorderObserver>
 {
@@ -71,11 +134,13 @@ class SoundRecorderObserver : public media::MediaRecorderObserverInterface, publ
 		printf("##################################\n");
 		printf("####     onRecordStarted      ####\n");
 		printf("##################################\n");
-        if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER) {
-			gPCMFile = fopen(filePath, "w");
-			if (gPCMFile == NULL) {
-				std::cout << "FILE OPEN FAILED" << std::endl;
-				return;
+		if (!isRealTime) {
+			if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER) {
+				gPCMFile = fopen(filePath, "w");
+				if (gPCMFile == NULL) {
+					std::cout << "FILE OPEN FAILED" << std::endl;
+					return;
+				}
 			}
 		}
 	}
@@ -90,12 +155,21 @@ class SoundRecorderObserver : public media::MediaRecorderObserverInterface, publ
 		printf("##################################\n");
 		printf("####      onRecordFinished    ####\n");
 		printf("##################################\n");
-        if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER && gPCMFile != NULL) {
+        if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER && isRealTime == 0 && gPCMFile != NULL) {
 			fclose(gPCMFile);
 		}
 		soundRec.unprepare();
 		soundRec.destroy();
 		isRecording = false;
+#if defined SOUND_RECORDER_LIVE_DATA
+		if (isRealTime == 1) {
+			int size = 0;
+			int network_data = htonl(size);
+			int ret = send(client_fd, (char *)&network_data, sizeof(int), 0);
+			close(client_fd);
+			shutdown(server_fd, SHUT_RDWR);
+		}
+#endif
 		file_no++;
 	}
 	void onRecordStartError(media::MediaRecorder &mediaRecorder, media::recorder_error_t errCode) override
@@ -112,7 +186,16 @@ class SoundRecorderObserver : public media::MediaRecorderObserverInterface, publ
 	}
 	void onRecordBufferDataReached(media::MediaRecorder &mediaRecorder, std::shared_ptr<unsigned char> data, size_t size) override
 	{
-		if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER) {
+#if defined SOUND_RECORDER_LIVE_DATA
+		if (isRealTime == 1) {
+			printf("[onRBDR] send data size %d\n", size);
+			int network_data = htonl(size);
+			int ret = send(client_fd, (char *)&network_data, sizeof(int), 0);
+			size_t sent_bytes = send(client_fd, (char *)data.get(), size, 0);
+			printf("Sent data %d\n", sent_bytes);
+		}
+#endif
+		if (isRealTime == 0) {
 			if (gPCMFile != NULL) {
 				int sz_written = fwrite(data.get(), sizeof(unsigned char), size, gPCMFile);
 				printf("Audio data dump write operation done, size: %d\n", sz_written);
@@ -158,20 +241,22 @@ bool startRecord(void)
 		return false;
 	}
 
-	if (mMediaType == TEST_MEDIATYPE_PCM) {
-		snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".pcm");
-	} else if (mMediaType == TEST_MEDIATYPE_OPUS) {
-		snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".opus");
-	} else if (mMediaType == TEST_MEDIATYPE_WAVE) {
-		snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".wav");
+	if (!isRealTime) {
+		if (mMediaType == TEST_MEDIATYPE_PCM) {
+			snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".pcm");
+		} else if (mMediaType == TEST_MEDIATYPE_OPUS) {
+			snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".opus");
+		} else if (mMediaType == TEST_MEDIATYPE_WAVE) {
+			snprintf(filePath, FILE_NAME_SIZE, "%s%d%s", MNT_FILE_PATH, file_no, ".wav");
+		}
+		printf("File path for recording is %s\n", filePath);
 	}
-	printf("File path for recording is %s\n", filePath);
 
     if (mDataSourceType == TEST_DATASOURCE_TYPE_FILE) {
-		soundRec.setDataSource(unique_ptr<FileOutputDataSource>(
+		soundRec.setDataSource(std::unique_ptr<FileOutputDataSource>(
 			new FileOutputDataSource(nChannels, sampRate, media::AUDIO_FORMAT_TYPE_S16_LE, filePath)));
 	} else if (mDataSourceType == TEST_DATASOURCE_TYPE_BUFFER) {
-		soundRec.setDataSource(unique_ptr<BufferOutputDataSource>(
+		soundRec.setDataSource(std::unique_ptr<BufferOutputDataSource>(
             new BufferOutputDataSource(nChannels, sampRate, media::AUDIO_FORMAT_TYPE_S16_LE)));
 	}
 	if (mret == media::RECORDER_OK) {
@@ -217,8 +302,9 @@ void set_default_setting() {
     nChannels = NUMBER_OF_CHANNELS;
     recordTime = RECORD_DURATION_IN_SECONDS;
     volume = VOLUME;
-    mDataSourceType = TEST_DATASOURCE_TYPE_FILE;
+    mDataSourceType = TEST_DATASOURCE_TYPE_BUFFER;
 	mMediaType = TEST_MEDIATYPE_PCM;
+	isRealTime = 1;
 }
 
 void set_recorder_settings(int argc, char *argv[])
@@ -241,6 +327,9 @@ void set_recorder_settings(int argc, char *argv[])
 	} else if (strncmp(argv[2], "file", 5) == 0) {
 		mMediaType = atoi(argv[3]);
 		printf("Set file type to %s\n", typefile[mMediaType]);
+	} else if (strncmp(argv[2], "realtime", 9) == 0) {
+		isRealTime = atoi(argv[3]);
+		printf("Set realtime recording to %s\n", typeRealTimeTransfer[isRealTime]);
 	} else {
 		printf("Invalid option to set recorder.\n");
 	}
@@ -258,6 +347,7 @@ void get_full_settings()
 	}
     printf("SoundRecorder DataSourceType : %s\n", datasourcetype[mDataSourceType]);
 	printf("Media Type Selected is %s\n", typefile[mMediaType]);
+	printf("Realtime Transfer Supported : %s\n", typeRealTimeTransfer[isRealTime]);
 }
 
 void get_recorder_settings(int argc, char *argv[])
@@ -287,6 +377,8 @@ void get_recorder_settings(int argc, char *argv[])
             printf("Data Source Selected is %s\n", datasourcetype[mDataSourceType]);
         } else if (strncmp(argv[2], "file", 5) == 0) {
 			printf("Media Type Selected is %d\n", typefile[mMediaType]);
+		} else if (strncmp(argv[2], "realtime", 9)) {
+			printf("Recorder data transfer type is %s\n", typeRealTimeTransfer[isRealTime]);
 		} else {
             printf("Invalid option to get recorder setting.\n");
         }
@@ -307,9 +399,10 @@ void print_usage()
 	printf("2. channels [Channels]: 1, 2\n");
 	printf("3. duration [Record Duration]: 0[infinite record], 10, 20, 30, 60\n");
 	printf("4. volume [Volume]: 0~10\n");
-	printf("5. source [DataSource]: 0:file, 1:buffer\n");
+	printf("5. source [DataSource]: 0:buffer, 1:file\n");
 	printf("6. file [File Extension]: 0 : pcm, 1 : opus, 2 : wav\n");
 	printf("7. maxvolume [Maximum Volume] We can only get this and not set this.\n");
+	printf("8. realtime [Realtime Data Share]: 0:off, 1:on\n");
 	printf("\n");
 }
 
@@ -338,7 +431,10 @@ void parse_soundrecorder_options(int argc, char *argv[])
 				printf("Invalid Record Command. Use soundrecorder for usage.\n");
 				return;
 			}
-
+			if (isRealTime) {
+				live_data_share_setup();
+			}
+			printf("[parse_soundrecorder] Start Recording\n");
 			bool startStatus = startRecord();
 			if (startStatus == true) {
 				isRecording = true;
@@ -363,10 +459,12 @@ int soundrecorder_main(int argc, char *argv[])
 	if (!changedSetting) {
 		set_default_setting();
 	}
+
     parse_soundrecorder_options(argc, argv);
 	while(isRecording) {
 		sleep(1);
 	}
+
     printf("Graceful Exit\n");
 	return 0;
 }
