@@ -951,10 +951,15 @@ int ndp120_init(struct ndp120_dev_s *dev)
 {
 	/* File names */
 	int s;
-
+#if defined CONFIG_BUILD_FLAT
 	const char *mcu_package = "/mnt/kernel/audio/mcu_fw";
 	const char *dsp_package = "/mnt/kernel/audio/dsp_fw";
 	const char *neural_package = "/mnt/kernel/audio/kd_local";
+#else
+	const char *mcu_package = "/res/kernel/audio/mcu_fw";
+	const char *dsp_package = "/res/kernel/audio/dsp_fw";
+	const char *neural_package = "/res/kernel/audio/kd_local";
+#endif
 
 	const unsigned int AUDIO_TANK_MS =
 		AUDIO_BEFORE_MATCH_MS  /* max word length + ~500 MS preroll */
