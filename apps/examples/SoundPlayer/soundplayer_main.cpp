@@ -46,8 +46,11 @@ using namespace media;
 using namespace media::stream;
 
 #if defined SOUND_PLAYER_LIVE_DATA
-#define LIVE_DATA_PORT 5557
+#define PLAYER_LIVE_DATA_PORT 5557
 #define SOUND_PLAYER_PACKET_LENGTH 2048
+#define PLAYER_CONTROL_COMMAND_BUFFER_SIZE 128
+#define PLAYER_DATA_DUMP_BUFFER_SIZE 1024
+#define PLAYER_DATA_DUMP_QUEUE_NAME "/dev/player_data_dump"
 #endif
 
 #define DEFAULT_CONTENTS_PATH "/mnt"
@@ -59,52 +62,198 @@ static int gPlaybackFinished;
 static int gAllTrackPlayed;
 
 #if defined SOUND_PLAYER_LIVE_DATA
-static int server_fd;
-int player_client_fd;
+static int player_server_fd;
+static int player_client_fd;
+static int player_fifo_read_fd;
+static struct sockaddr_in gServerAddr, gClientAddr;
+socklen_t gClientLen = sizeof(gClientAddr);
+static pthread_t gThreadId;
+static fd_set readfds;
 int toShareData;
-#endif
+unsigned char gPlayerDataDumpBuffer[PLAYER_DATA_DUMP_BUFFER_SIZE];
+char gPlayerControlCommandBuffer[PLAYER_CONTROL_COMMAND_BUFFER_SIZE];
+static int gWaitingForData = 0;
+static int gRemainingBytes = 0;
+static int gBytesReadSofar = 0;
 
-#if defined SOUND_PLAYER_LIVE_DATA
+static int recv_message(int fd, char *buf, int buflen)
+{
+	int received = 0;
+	while (1) {
+		int res = read(fd, buf + received, buflen - received);
+		if (res < 0) {
+			int err_no = errno;
+			if (err_no == EAGAIN || err_no == EINTR) {
+				continue;
+			}
+			printf("read error %d\n", err_no);
+			return -1;
+		}
+		received += res;
+		if (received == buflen) {
+			break;
+		}
+	}
+	return received;
+}
+
+void *dataTransmitter(void *arg)
+{
+	printf("Entered dataTransmitter thread\n");
+    int len;
+    while (1) {
+        FD_ZERO(&readfds);
+        FD_SET(player_server_fd, &readfds);
+        FD_SET(player_fifo_read_fd, &readfds);
+        int maxfd = (player_server_fd > player_fifo_read_fd) ? player_server_fd : player_fifo_read_fd;
+
+        printf("Wait for an activity on one of the file descriptors");
+        int ret = select(maxfd + 1, &readfds, NULL, NULL, NULL);
+        if (ret < 0) {
+            if (errno == EBADF){
+                printf("select operation failed due to file descripter close: %d", errno);
+                break;
+            }
+            else if(errno == EINTR){
+                printf("select operation failed due to Temporary Interrupt: %d", errno);
+                continue;
+            }
+            printf("select operation failed over file descripters: %d", errno);
+            break;
+        }
+
+        // Check if there's data on the UDP socket
+        if (FD_ISSET(player_server_fd, &readfds)) {
+            printf("Received an activity on sockfd descriptors");
+            len = recvfrom(player_server_fd, gPlayerControlCommandBuffer, PLAYER_CONTROL_COMMAND_BUFFER_SIZE-1, 0, 
+																(struct sockaddr *)&gClientAddr, &gClientLen);
+            if (len < 0) {
+                continue;
+            }
+            gPlayerControlCommandBuffer[len] = '\0';
+            if (strncmp(gPlayerControlCommandBuffer, "START", 6) == 0) {
+                toShareData = 1;
+                printf("Received START command. Starting to send data to client from FIFO");
+            } else if (strncmp(gPlayerControlCommandBuffer, "STOP", 5) == 0) {
+                toShareData = 0;
+                printf("Received STOP command. Stopping data transfer to client from FIFO");
+            } else {
+                printf("Received unknown command: %s", gPlayerControlCommandBuffer);
+                continue;
+            }
+        }
+
+        // Check if there's data on the FIFO
+		uint16_t length;
+        if (FD_ISSET(player_fifo_read_fd, &readfds)) {
+            printf("Received an activity on Fifo descriptors");
+
+            if (!gWaitingForData) {
+                // Get the length from the first 2 bytes
+                len = recv_message(player_fifo_read_fd, (char *)gPlayerDataDumpBuffer, 2);
+                if (len <= 0) {
+                    printf("operation to read length of data from FIFO Failed");
+                    continue;
+                }
+                
+                memcpy(&length , gPlayerDataDumpBuffer, sizeof(length));
+                printf("Read %d length to client:", length);
+                gRemainingBytes = length;
+                gWaitingForData = 1;
+                gBytesReadSofar = 0;
+            }
+            if (gWaitingForData) {
+                // We are expecting to read the actual data
+                ssize_t bytes_read = read(player_fifo_read_fd, gPlayerDataDumpBuffer + gBytesReadSofar, gRemainingBytes);
+                if (bytes_read < 0) {
+                    int err_no = errno;
+                    if (err_no == EAGAIN || err_no == EINTR) {
+                        continue;
+                    }
+                    printf("read error %d\n", err_no);
+                    continue; // or return
+                }
+
+                gBytesReadSofar += bytes_read;
+                gRemainingBytes -= bytes_read;
+
+                if (gRemainingBytes == 0) {
+                    // Complete data received
+                    gWaitingForData = 0;
+                    // Send the data to the client
+					int network_data = htonl(length);
+					ret = sendto(player_server_fd, (char *)&network_data, sizeof(int), 0, (struct sockaddr *)&gClientAddr, sizeof(gClientAddr));
+
+                    len = sendto(player_server_fd, gPlayerDataDumpBuffer, gBytesReadSofar, 0, (struct sockaddr *)&gClientAddr, sizeof(gClientAddr));
+                    if (len == -1) {
+                        printf("sendto error:%d", errno);
+                        continue;
+                    }
+                    printf("Sent %d bytes to client", len);
+                }
+            }
+        }
+    }
+	return NULL;
+}
+
 int live_player_data_share_setup() {
-	struct sockaddr_in address;
-	int opt = 1;
-	int addrlen = sizeof(address);
-
-	/* Creating socket file descriptor */
-	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-		printf("failed to fetch a socket fd\n");
-		return 0;
+	if ((player_server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+		printf("failed to create a socket fd");
+		return -1;
 	}
 
-	/* Forcefully attaching socket to the port */
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-		printf("setting socket options failed\n");
-		return 0;
-	}
+    memset(&gServerAddr, 0, sizeof(gServerAddr));
+    gServerAddr.sin_family = AF_INET;
+    gServerAddr.sin_addr.s_addr = INADDR_ANY;
+    gServerAddr.sin_port = htons(PLAYER_LIVE_DATA_PORT);
 
-	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = htonl(INADDR_ANY);
-	address.sin_port = htons(LIVE_DATA_PORT);
-	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-		printf("binding socket failed\n");
-		return 0;
+	if (bind(player_server_fd, (struct sockaddr*)&gServerAddr, sizeof(gServerAddr)) < 0) {
+		printf("binding socket failed");
+        close(player_server_fd);
+		return -1;
 	}
+    printf("server Socket Created\n");
 
-	/* lets wait for client to connect */
-	printf("Waiting for client to connect............\n");
-	if (listen(server_fd, 3) < 0) {
-		printf("listening on socket failed\n");
-		return 0;
+	int result = mkfifo(PLAYER_DATA_DUMP_QUEUE_NAME, 0666);
+	printf("Checkpoint 1 mkfifo\n");
+	if (result < 0 && result != -EEXIST) {
+		printf("create PLAYER_DATA_DUMP_QUEUE fail %d", errno);
+		return -1;
 	}
+	printf("Checkpoint 2 mkfifo\n");
 
-	if ((player_client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
-		printf("failed to accept connection\n");
-		return 0;
+    player_fifo_read_fd = open(PLAYER_DATA_DUMP_QUEUE_NAME, O_RDONLY | O_NONBLOCK);
+    printf("Checkpoint 3 mkfifo\n");
+	if (player_fifo_read_fd < 0) {
+        printf("open PLAYER_DATA_DUMP_QUEUE fail %d", errno);
+		unlink(PLAYER_DATA_DUMP_QUEUE_NAME);
+        close(player_server_fd);
+        return -1;
+    }
+	printf("FIFO was created successfully");
+/*
+    if (pthread_create(&gThreadId, NULL, dataTransmitter, NULL) != 0) {
+        printf("Failed to create dataTransmitter thread %d", errno);
+        close(player_server_fd);
+        close(player_fifo_read_fd);
+        return -1;
+    }
+
+    if (pthread_setname_np(gThreadId, "Player_DataDumpOverNetwork") != 0) {
+		printf("Error in setting dataTransmitter thread name, error_no: %d", errno);
 	}
-
-	printf("Client connected, received acknowledgment\n");
-	/* Connection with client established*/
+	pthread_join(gThreadId, NULL);
+    printf("Player_DataDumpOverNetwork created");
+*/
 	return 0;	
+}
+
+void live_player_data_share_deinit()
+{
+    close(player_server_fd);
+    close(player_fifo_read_fd);
+	unlink(PLAYER_DATA_DUMP_QUEUE_NAME);
 }
 #endif
 
@@ -159,7 +308,7 @@ void SoundPlayer::onPlaybackFinished(MediaPlayer &mediaPlayer)
 		if (toShareData == 1) {
 			int size = 0;
 			int network_data = htonl(size);
-			int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);	
+			int ret = sendto(player_client_fd, (char *)&network_data, sizeof(int), 0, (struct sockaddr *)&gClientAddr, sizeof(gClientAddr));	
 		}
 #endif	
 	mPlayIndex++;
@@ -170,7 +319,7 @@ void SoundPlayer::onPlaybackFinished(MediaPlayer &mediaPlayer)
 #if defined SOUND_PLAYER_LIVE_DATA
 		if (toShareData == 1) {
 			close(player_client_fd);
-			shutdown(server_fd, SHUT_RDWR);
+			shutdown(player_server_fd, SHUT_RDWR);
 		}
 #endif
 		return;
@@ -301,12 +450,16 @@ bool SoundPlayer::init(char *argv[])
 	gAllTrackPlayed = false;
 	mChannel = atoi(argv[4]);
 	toShareData = atoi(argv[5]);
+#if defined SOUND_PLAYER_LIVE_DATA
 	if (toShareData) {
 		live_player_data_share_setup();
 		printf("Number of files to play: %d\n", mNumContents);
 		int network_data = htonl(mNumContents);
-		int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);	
+		int ret = sendto(player_server_fd, (char *)&network_data, sizeof(int), 0, (struct sockaddr *)&gClientAddr, sizeof(gClientAddr));
+		dataTransmitter(NULL);
+
 	}
+#endif
 	return true;
 }
 
@@ -392,6 +545,11 @@ int soundplayer_main(int argc, char *argv[])
 	while (!gPlaybackFinished) {
 		sleep(1);
 	}
+#if defined SOUND_PLAYER_LIVE_DATA
+	if (toShareData) {
+		live_player_data_share_deinit();
+	}
+#endif
 	printf("terminate application\n");
 	return 0;
 }

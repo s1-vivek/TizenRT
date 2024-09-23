@@ -101,9 +101,51 @@
 
 #define SHARE_NETWORK_DATA 1
 #ifdef SHARE_NETWORK_DATA
+#define PLAYER_DATA_DUMP_QUEUE_NAME "/dev/player_data_dump"
+#define PLAYER_DATA_BUFFER_SIZE 1024
 extern int toShareData;
-extern int player_client_fd;
 static int total_received_data = 0;
+
+static unsigned char gPlayerDataBuffer[PLAYER_DATA_BUFFER_SIZE];
+static int gPlayerDataDumpDescriptor;
+
+static int send_message(int fd, void *buf, int buflen)
+{
+	int sent = 0;
+	while (1) {
+		int res = write(fd, (void *)buf + sent, buflen - sent);
+		if (res < 0) {
+			int err_no = errno;
+			if (err_no == EAGAIN || err_no == EINTR) {
+				continue;
+			}
+			printf("write error %d", err_no);
+			return -1;
+		}
+		sent += res;
+		if (sent == buflen) {
+			break;
+		}
+	}
+	return 0;
+}
+
+static int player_logs_dumper_send_to_queue(unsigned char *player_buf, int len)
+{
+	// Copy the length to the first two bytes and the data to the rest of the output buffer
+	uint16_t dest_len = (uint16_t)len;
+	memcpy(gPlayerDataBuffer, &dest_len, 2);
+	memcpy(gPlayerDataBuffer + 2, player_buf, len);
+
+	int res = send_message(gPlayerDataDumpDescriptor, (void *)gPlayerDataBuffer, len + 2);
+
+	if (res < 0) {
+		printf("Failed to send message to PLAYER_DATA_DUMP_QUEUE");
+		return -1;
+	}
+	return 0;
+}
+
 #endif
 
 #define __force
@@ -509,10 +551,12 @@ int pcm_writei(struct pcm *pcm, const void *data, unsigned int frame_count)
 	if (toShareData) {
 		total_received_data += pending;
 		printf("[pcm_writei] send data size %d\n", pending);
-		int network_data = htonl(pending);
-		int ret = send(player_client_fd, (char *)&network_data, sizeof(int), 0);
-		size_t sent_bytes = send(player_client_fd, (char *)data, pending, 0);
-		printf("Sent data %d\n", sent_bytes);
+		int ret = player_logs_dumper_send_to_queue(data, pending);
+		if (ret != 0) {
+			printf("Failed to send Player data to PLAYER_DATA_DUMP_QUEUE");
+		} else {
+			printf("Player data sent to PLAYER_DATA_DUMP_QUEUE");
+		}
 	}
 #endif
 
@@ -967,7 +1011,14 @@ struct pcm *pcm_open(unsigned int card, unsigned int device, unsigned int flags,
 	pcm->next_offset = 0;
 	pcm->next_buf = NULL;
 	pcm->mmap_idx = 0;
-
+#ifdef SHARE_NETWORK_DATA
+	if (toShareData) {
+		gPlayerDataDumpDescriptor = open(PLAYER_DATA_DUMP_QUEUE_NAME, O_WRONLY | O_NONBLOCK);
+		if (gPlayerDataDumpDescriptor < 0) {
+			printf("open PLAYER_DATA_DUMP_QUEUE fail %d", errno);
+		}	
+	}
+#endif
 	return pcm;
 
 fail_cleanup_buffers:
