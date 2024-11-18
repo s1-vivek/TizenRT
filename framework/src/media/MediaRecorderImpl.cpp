@@ -37,10 +37,15 @@ MediaRecorderImpl::MediaRecorderImpl(MediaRecorder &recorder) :
 	mDuration(0),
 	mFileSize(0),
 	mTotalFrames(0),
-	mCapturedFrames(0),
-	mStreamInfo(nullptr)
+	mCapturedFrames(0)
 {
 	medvdbg("MediaRecorderImpl::MediaRecorderImpl()\n");
+	int ret = stream_info_create(STREAM_TYPE_VOICE_RECORD, &info);
+	if (ret != OK) {
+		meddbg("stream_info_create failed ret : %d\n", ret);
+	}
+	mStreamInfo = std::shared_ptr<stream_info_t>(info, [](stream_info_t *ptr) { stream_info_destroy(ptr); });
+
 }
 
 recorder_result_t MediaRecorderImpl::create()
@@ -121,6 +126,14 @@ void MediaRecorderImpl::destroyRecorder(recorder_result_t& ret)
 
 recorder_result_t MediaRecorderImpl::prepare()
 {
+	recorder_result_t ret = RECORDER_OK;
+
+	stream_focus_state_t streamState = getStreamFocusState();
+	if (streamState != STREAM_FOCUS_STATE_ACQUIRED) {
+		ret = RECORDER_ERROR_FOCUS_NOT_READY;
+		meddbg("MediaRecorder prepare failed. ret: %d, player: %x\n", ret, &mRecorder);
+		return ret;
+	}
 	std::unique_lock<std::mutex> lock(mCmdMtx);
 
 	medvdbg("MediaRecorderImpl::prepare()\n");
@@ -129,7 +142,7 @@ recorder_result_t MediaRecorderImpl::prepare()
 		meddbg("Worker is not alive\n");
 		return RECORDER_ERROR_NOT_ALIVE;
 	}
-	recorder_result_t ret = RECORDER_OK;
+	
 	mrw.enQueue(&MediaRecorderImpl::prepareRecorder, shared_from_this(), std::ref(ret));
 	mSyncCv.wait(lock);
 
@@ -160,6 +173,13 @@ void MediaRecorderImpl::prepareRecorder(recorder_result_t& ret)
 		meddbg("set_audio_stream_in failed : result : %d channel %d sample rate : %d format : %d\n", result, \
 			source->getChannels(), source->getSampleRate(), (pcm_format)source->getPcmFormat());
 		mOutputHandler.close();
+		ret = RECORDER_ERROR_INTERNAL_OPERATION_FAILED;
+		return notifySync();
+	}
+
+	audio_manager_result_t res = set_stream_in_policy(mStreamInfo->policy);
+	if (res != AUDIO_MANAGER_SUCCESS) {
+		meddbg("MediaRecorder prepare fail : set_stream_in_policy fail. res: %d\n", res);
 		ret = RECORDER_ERROR_INTERNAL_OPERATION_FAILED;
 		return notifySync();
 	}
@@ -217,7 +237,7 @@ void MediaRecorderImpl::unprepareRecorder(recorder_result_t& ret)
 		ret = RECORDER_ERROR_INVALID_STATE;
 		return notifySync();
 	}
-	audio_manager_result_t result = reset_audio_stream_in();
+	audio_manager_result_t result = reset_audio_stream_in(mStreamInfo->id);
 	if (result != AUDIO_MANAGER_SUCCESS) {
 		meddbg("reset_audio_stream_in failed ret : %d\n", result);
 		ret = RECORDER_ERROR_INTERNAL_OPERATION_FAILED;
@@ -246,6 +266,15 @@ void MediaRecorderImpl::unprepareRecorder(recorder_result_t& ret)
 
 recorder_result_t MediaRecorderImpl::start()
 {
+	recorder_result_t ret = RECORDER_OK;
+
+	stream_focus_state_t streamState = getStreamFocusState();
+	if (streamState != STREAM_FOCUS_STATE_ACQUIRED) {
+		ret = RECORDER_ERROR_FOCUS_NOT_READY;
+		meddbg("MediaRecorder start failed. ret: %d, recorder: %x\n", ret, &mRecorder);
+		return ret;
+	}
+
 	std::lock_guard<std::mutex> lock(mCmdMtx);
 	medvdbg("MediaRecorderImpl::start()\n");
 	RecorderWorker& mrw = RecorderWorker::getWorker();
