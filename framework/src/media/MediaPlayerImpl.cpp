@@ -299,6 +299,40 @@ void MediaPlayerImpl::unpreparePlayer(player_result_t &ret)
 	return notifySync();
 }
 
+player_result_t MediaPlayerImpl::reset()
+{
+	printf("[mediaplayer] Checkpoint 1\n");
+	LOG_STATE_INFO(mCurState);
+	meddbg("MediaPlayer reset mPlayer : %x\n", &mPlayer);
+
+	PlayerWorker &mpw = PlayerWorker::getWorker();
+	if (!mpw.isAlive()) {
+		meddbg("PlayerWorker is not alive\n");
+		return PLAYER_ERROR_NOT_ALIVE;
+	}
+	printf("[mediaplayer] Checkpoint 1\n");
+	if (mCurState == PLAYER_STATE_READY || mCurState == PLAYER_STATE_PLAYING || mCurState == PLAYER_STATE_PAUSED) {
+		if (reset_audio_stream_out(mStreamInfo->id) != AUDIO_MANAGER_SUCCESS) {
+			meddbg("MediaPlayer unprepare fail : reset_audio_stream_out fail\n");
+			return PLAYER_ERROR_INTERNAL_OPERATION_FAILED;
+		}		
+
+		mInputHandler.close();
+
+		if (mBuffer) {
+			delete[] mBuffer;
+			mBuffer = nullptr;
+		}
+		mBufSize = 0;
+	}
+	printf("[mediaplayer] Checkpoint 2\n");
+	mCurState = PLAYER_STATE_IDLE;
+	printf("[mediaplayer] Checkpoint 3\n");
+	mpw.resetWorker();
+	return PLAYER_OK;
+}
+
+
 player_result_t MediaPlayerImpl::start()
 {
 	player_result_t ret = PLAYER_OK;

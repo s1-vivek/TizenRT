@@ -81,6 +81,32 @@ void MediaWorker::stopWorker()
 	}
 }
 
+void MediaWorker::resetWorker()
+{
+	printf("[MW]Checkpoint 1\n");
+	pthread_kill(mWorkerThread, SIGKILL);
+	printf("[MW]Checkpoint 2\n");
+	mRefCnt = 1;
+	int ret;
+	struct sched_param sparam;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, mStacksize);
+	sparam.sched_priority = mPriority;
+	pthread_attr_setschedparam(&attr, &sparam);
+	mIsRunning = true;
+	printf("[MW]Checkpoint 3\n");
+	ret = pthread_create(&mWorkerThread, &attr, static_cast<pthread_startroutine_t>(MediaWorker::mediaLooper), this);
+	if (ret != OK) {
+		medvdbg("Fail to create worker thread, return value : %d\n", ret);
+		--mRefCnt;
+		mIsRunning = false;
+		return;
+	}
+	printf("[MW]Checkpoint 4\n");
+	pthread_setname_np(mWorkerThread, mThreadName);
+}
+
 std::function<void()> MediaWorker::deQueue()
 {
 	return mWorkerQueue.deQueue();

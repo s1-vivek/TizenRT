@@ -244,6 +244,45 @@ void MediaRecorderImpl::unprepareRecorder(recorder_result_t& ret)
 	notifySync();
 }
 
+recorder_result_t MediaRecorderImpl::reset()
+{
+	LOG_STATE_INFO(mCurState);
+	meddbg("MediaRecorderImpl::reset()\n");
+	RecorderWorker &mrw = RecorderWorker::getWorker();
+	if (!mrw.isAlive()) {
+		meddbg("RecorderWorker is not alive\n");
+		return RECORDER_ERROR_NOT_ALIVE;
+	}
+
+	if (mCurState == RECORDER_STATE_READY || mCurState == RECORDER_STATE_RECORDING || mCurState == RECORDER_STATE_PAUSED) {
+		audio_manager_result_t result = reset_audio_stream_in();
+		if (result != AUDIO_MANAGER_SUCCESS) {
+			meddbg("reset_audio_stream_in failed ret : %d\n", result);
+			return RECORDER_ERROR_INTERNAL_OPERATION_FAILED;
+		}
+
+		auto source = mOutputHandler.getDataSource();
+		if (source->isPrepared()) {
+			mOutputHandler.close();
+		}
+
+		if (mBuffer) {
+			delete[] mBuffer;
+			mBuffer = nullptr;
+		}
+
+		mBuffSize = 0;
+		mDuration = 0;
+		mFileSize = 0;
+		mTotalFrames = 0;
+		mCapturedFrames = 0;
+	}
+	mCurState = RECORDER_STATE_IDLE;
+
+	mrw.resetWorker();
+	return RECORDER_OK;
+}
+
 recorder_result_t MediaRecorderImpl::start()
 {
 	std::lock_guard<std::mutex> lock(mCmdMtx);
