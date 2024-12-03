@@ -98,12 +98,14 @@
 int pthread_kill(pthread_t thread, int signo)
 {
 	int ret;
-
+	printf("[pk] Checkpoint 1\n");
 	set_errno(EINVAL);
+	printf("[pk] Checkpoint 2\n");
 	ret = kill((pid_t)thread, signo);
+	printf("[pk] Checkpoint 3\n");
 	if (ret != OK) {
 		ret = get_errno();
 	}
-
+	printf("[pk] Checkpoint 4\n");
 	return ret;
 }

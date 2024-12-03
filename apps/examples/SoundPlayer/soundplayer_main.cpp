@@ -71,6 +71,8 @@ public:
 	void onPlaybackStopped(MediaPlayer &mediaPlayer) override;
 	void onAsyncPrepared(MediaPlayer &mediaPlayer, player_error_t error) override;
 	void onFocusChange(int focusChange) override;
+	void recoverCheck(void);
+	void destroyPlayer(void);
 
 private:
 	MediaPlayer mp;
@@ -85,6 +87,9 @@ private:
 	bool mTrackFinished;
 	unsigned int mSampleRate;
 	uint8_t mVolume;
+	int mFlag;
+	bool isTransient;
+	bool firstTry;
 	void loadContents(const char *path);
 };
 
@@ -95,6 +100,13 @@ void SoundPlayer::onPlaybackStarted(MediaPlayer &mediaPlayer)
 	mPaused = false;
 	mStopped = false;
 	mIsPlaying = true;
+	if (mFlag == 4 && firstTry == true) {
+		mp.reset();
+	}
+	if (mFlag == 6 && firstTry == true) {
+		sleep(1);
+		mp.reset();
+	}
 }
 
 void SoundPlayer::onPlaybackFinished(MediaPlayer &mediaPlayer)
@@ -108,7 +120,7 @@ void SoundPlayer::onPlaybackFinished(MediaPlayer &mediaPlayer)
 		mTrackFinished = true;
 		printf("All Track played, Destroy Player\n");
 		mp.unprepare();
-		mp.destroy();
+		//mp.destroy();
 		auto &focusManager = FocusManager::getFocusManager();
 		focusManager.abandonFocus(mFocusRequest);
 		mHasFocus = false;
@@ -151,7 +163,7 @@ void SoundPlayer::handleError(player_error_t error)
 		focusManager.abandonFocus(mFocusRequest);
 	}
 	mp.unprepare();
-	mp.destroy();
+	//mp.destroy();
 	mTrackFinished = true;
 }
 
@@ -161,6 +173,9 @@ void SoundPlayer::onPlaybackPaused(MediaPlayer &mediaPlayer)
 	mStopped = false;
 	mPaused = true;
 	mIsPlaying = false;
+	if (mFlag == 5 && firstTry == true) {
+		mp.reset();
+	}
 }
 
 void SoundPlayer::onPlaybackStopped(MediaPlayer &mediaPlayer)
@@ -222,6 +237,7 @@ void SoundPlayer::onFocusChange(int focusChange)
 bool SoundPlayer::init(char *argv[])
 {
 	struct stat st;
+	firstTry = true;
 	int ret;
 	char *path = argv[1];
 	ret = stat(path, &st);
@@ -244,11 +260,20 @@ bool SoundPlayer::init(char *argv[])
 	for (int i = 0; i != (int)mList.size(); i++) {
 		printf("path : %s\n", mList.at(i).c_str());
 	}
+	mFlag = atoi(argv[5]);
+	isTransient = atoi(argv[6]);
+	if (mFlag == 0 && firstTry == true) {
+		mp.reset();
+	}
 	
 	player_result_t res = mp.create();
 	if (res != PLAYER_OK) {
 		printf("MediaPlayer create failed res : %d\n", res);
 		return false;
+	}
+	if (mFlag == 1 && firstTry == true) {
+		sleep(1);
+		mp.reset();
 	}
 	mp.setObserver(shared_from_this());
 
@@ -268,7 +293,11 @@ bool SoundPlayer::init(char *argv[])
 
 	auto &focusManager = FocusManager::getFocusManager();
 	printf("mp : %x request focus!!\n", &mp);
-	focusManager.requestFocus(mFocusRequest);
+	if (isTransient) {
+		focusManager.requestFocusTransient(mFocusRequest);	
+	} else {
+		focusManager.requestFocus(mFocusRequest);
+	}
 
 	return true;
 }
@@ -287,11 +316,17 @@ player_result_t SoundPlayer::startPlayback(void)
 		printf("set Data source failed. res : %d\n", res);
 		return res;
 	}
+	if (mFlag == 2 && firstTry == true) {
+		mp.reset();
+	}
 
 	res = mp.prepare();
 	if (res != PLAYER_OK) {
 		printf("prepare failed res : %d\n", res);
 		return res;
+	}
+	if (mFlag == 3 && firstTry == true) {
+		mp.reset();
 	}
 	uint8_t curVolume = 0;
 	mp.getVolume(&curVolume);
@@ -345,6 +380,22 @@ bool SoundPlayer::checkTrackFinished(void)
 	return mTrackFinished;
 }
 
+void SoundPlayer::recoverCheck(void) {
+	firstTry = false;
+	mTrackFinished = false;
+	auto &focusManager = FocusManager::getFocusManager();
+	printf("mp : %x request focus!!\n", &mp);
+	if (isTransient) {
+		focusManager.requestFocusTransient(mFocusRequest);	
+	} else {
+		focusManager.requestFocus(mFocusRequest);
+	}
+}
+
+void SoundPlayer::destroyPlayer(void) {
+	mp.destroy();
+}
+
 extern "C" {
 /*
  This is guide to use MediaPlayer with focus request.
@@ -383,8 +434,8 @@ int soundplayer_main(int argc, char *argv[])
 {
 	auto player = std::shared_ptr<SoundPlayer>(new SoundPlayer());
 	printf("cur SoundPlayer : %x\n", &player);
-
-	if (argc != 5) {
+	
+	if (argc != 7) {
 		printf("invalid input\n");
 		return -1;
 	}
@@ -396,6 +447,12 @@ int soundplayer_main(int argc, char *argv[])
 		
 		sleep(1);
 	}
+	player->recoverCheck();
+	while (!player->checkTrackFinished()) {
+		
+		sleep(1);
+	}
+	player->destroyPlayer();
 	printf("Terminate Application : %x\n", &player);
 
 	return 0;

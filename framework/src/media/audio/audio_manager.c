@@ -1179,6 +1179,7 @@ error_with_lock:
 
 int start_audio_stream_out(void *data, unsigned int frames)
 {
+	printf("I am in start_audio_stream_out\n");
 	int ret = 0;
 	int prepare_retry = AUDIO_STREAM_RETRY_COUNT;
 	audio_card_info_t *card;

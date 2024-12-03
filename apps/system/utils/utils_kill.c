@@ -173,6 +173,7 @@ static int send_signal(pid_t pid, int signo)
 #if defined(CONFIG_ENABLE_KILL)
 int utils_kill(int argc, char **args)
 {
+	printf("This file is being used\n");
 	int signo;
 	int sigidx;
 	pid_t pid;
@@ -199,6 +200,7 @@ int utils_kill(int argc, char **args)
 			}
 			return OK;
 		}
+		printf("We are using arg 2 case for kill operation\n");
 		signo = SIGKILL;
 	} else {
 		/* For a case that signal and pid are specified. */

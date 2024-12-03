@@ -56,10 +56,18 @@
 
 #include <tinyara/config.h>
 #include <stdio.h>
+#include <pthread.h>
 
 /****************************************************************************
  * hello_main
  ****************************************************************************/
+
+void mediaLooper(void)
+{
+	printf("I am in Media Looper\n");
+	sleep(5);
+	printf("after sleep log\n");
+}
 
 #ifdef CONFIG_BUILD_KERNEL
 int main(int argc, FAR char *argv[])
@@ -68,5 +76,20 @@ int hello_main(int argc, char *argv[])
 #endif
 {
 	printf("Hello, World!!\n");
+	int ret;
+	struct sched_param sparam;
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 4096);
+	sparam.sched_priority = 100;
+	pthread_attr_setschedparam(&attr, &sparam);
+	ret = pthread_create(&thread, &attr, mediaLooper, NULL);
+	if (ret != OK) {
+		printf("Fail to create worker thread, return value : %d\n", ret);
+		return 0;
+	}
+	pthread_setname_np(thread, "abc");
+	pthread_join(thread, NULL);
 	return 0;
 }

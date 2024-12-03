@@ -61,6 +61,7 @@ void MediaWorker::startWorker()
 			return;
 		}
 		pthread_setname_np(mWorkerThread, mThreadName);
+		printf("Worker is created: %d\n", mWorkerThread);
 	}
 }
 
@@ -79,6 +80,44 @@ void MediaWorker::stopWorker()
 		pthread_join(mWorkerThread, NULL);
 		medvdbg("%s::stopWorker() - mWorkerthread exited\n", mThreadName);
 	}
+}
+
+void MediaWorker::resetWorker()
+{
+	int ret = 0;
+	printf("Worker pid is %ld\n", mWorkerThread);
+	int cnt = 0;
+	while (mWorkerThread <= 0) {
+		cnt++;
+		if ((cnt%1000) == 0) {
+			printf("Gaurav was here\n");
+		}
+	}
+	printf("Worker is checked: %d\n", mWorkerThread);
+	if (mWorkerThread) {
+		ret = kill(mWorkerThread, SIGKILL);
+	}
+	printf("Get error number: %d\n", get_errno());
+	printf("[MW]Kill return value : %d\n", ret);
+	printf("[MW]Checkpoint 2\n");
+	mRefCnt = 1;
+	struct sched_param sparam;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, mStacksize);
+	sparam.sched_priority = mPriority;
+	pthread_attr_setschedparam(&attr, &sparam);
+	mIsRunning = true;
+	printf("[MW]Checkpoint 3\n");
+	ret = pthread_create(&mWorkerThread, &attr, static_cast<pthread_startroutine_t>(MediaWorker::mediaLooper), this);
+	if (ret != OK) {
+		medvdbg("Fail to create worker thread, return value : %d\n", ret);
+		--mRefCnt;
+		mIsRunning = false;
+		return;
+	}
+	printf("[MW]Checkpoint 4\n");
+	pthread_setname_np(mWorkerThread, mThreadName);
 }
 
 std::function<void()> MediaWorker::deQueue()
