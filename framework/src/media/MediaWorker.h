@@ -34,6 +34,7 @@ public:
 
 	void startWorker();
 	void stopWorker();
+	void resetWorker();
 
 	template <typename _Callable, typename... _Args>
 	void enQueue(_Callable &&__f, _Args &&... __args) {
