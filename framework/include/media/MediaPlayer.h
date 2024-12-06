@@ -135,6 +135,15 @@ public:
 	player_result_t unprepare();
 
 	/**
+	 * @brief Reset allocated resources related to the player.
+	 * @details @b #include <media/MediaPlayer.h>
+	 * This function is a synchronous API
+	 * @return The result of the reset operation
+	 * @since TizenRT v2.0
+	 */
+	player_result_t reset();
+
+	/**
 	 * @brief Start playback.
 	 * @details @b #include <media/MediaPlayer.h>
 	 * This function is a asynchronous API
