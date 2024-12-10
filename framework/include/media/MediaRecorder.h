@@ -121,6 +121,15 @@ public:
 	 * @since TizenRT v2.0
 	 */
 	recorder_result_t unprepare();
+
+	/**
+	 * @brief Reset allocated resources related to the recorder.
+	 * @details @b #include <media/MediaRecorder.h>
+	 * This function is a synchronous API
+	 * @return The result of the reset operation
+	 * @since TizenRT v2.0
+	 */
+	recorder_result_t reset();
 	
 	/**
 	 * @brief Start recording.
