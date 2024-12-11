@@ -54,9 +54,11 @@ uint8_t *gBuffer = NULL;
 uint32_t bufferSize = 0;
 
 static bool isRecording = true;
+static int mFlag;
+
 
 static void playRecordVoice(void);
-static void startRecord(void);
+static void startRecord(bool isRecover);
 
 class WakeRec : public media::voice::SpeechDetectorListenerInterface,public FocusChangeListener,
 				public media::MediaRecorderObserverInterface, public media::MediaPlayerObserverInterface,
@@ -68,18 +70,35 @@ private:
 	shared_ptr<FocusRequest> mFocusRequest;
 	FILE *fp;
 	bool mPaused;
+	bool recordDone;
+	bool resetDone;
+	bool firstTry = true;
 
 	void onRecordStarted(media::MediaRecorder &mediaRecorder) override
 	{
 		printf("##################################\n");
 		printf("####     onRecordStarted      ####\n");
 		printf("##################################\n");
+		if (mFlag == 4 && firstTry) {
+			resetRecorder();
+		}
+		if (mFlag == 5 && firstTry) {
+			sleep(1);
+			mr.pause();
+		}
+		if (mFlag == 6 && firstTry) {
+			sleep(1);
+			resetRecorder();
+		}
 	}
 	void onRecordPaused(media::MediaRecorder &mediaRecorder) override
 	{
 		printf("##################################\n");
 		printf("####      onRecordPaused      ####\n");
 		printf("##################################\n");
+		if (mFlag == 5 && firstTry) {
+			resetRecorder();
+		}
 	}
 	void onRecordFinished(media::MediaRecorder &mediaRecorder) override
 	{
@@ -87,7 +106,8 @@ private:
 		printf("####      onRecordFinished    ####\n");
 		printf("##################################\n");
 		mr.unprepare();
-		mr.destroy();
+		recordDone = true;
+		//mr.destroy();
 		fclose(fp);
 		playRecordVoice();
 	}
@@ -113,7 +133,7 @@ private:
 		if (errCode == RECORDER_ERROR_DEVICE_DEAD) {
 			printf("####      Mic is unreachable     ####\n");
 			mr.unprepare();
-			mr.destroy();
+			//mr.destroy();
 			fclose(fp);
 			playRecordVoice();
 		}
@@ -222,7 +242,17 @@ private:
 				}
 			}
 			sd->stopKeywordDetect();
-			startRecord();
+			recordDone = false;
+			resetDone = false;
+			startRecord(false);
+			printf("Checkpoint before sleep\n");
+			while (!recordDone && !resetDone) {
+				printf("in loop\n");
+				sleep(1);
+			}
+			printf("Checkpoint after sleep\n");
+			recoverCheck();
+			destroyRecorder(); 
 		} else if (event == SPEECH_DETECT_EPD) {
 			// do nothing
 		} else if (event == SPEECH_DETECT_NONE) {
@@ -267,14 +297,23 @@ private:
 		}
 	}
 
-	void startRecord(void)
+	void startRecord(bool isRecover)
 	{
-		media::recorder_result_t mret = mr.create();
-		if (mret == media::RECORDER_OK) {
-			printf("#### [MR] create succeeded.\n");
-		} else {
-			printf("#### [MR] create failed.\n");
-			return;
+		media::recorder_result_t mret;
+		if (mFlag == 0 && firstTry) {
+			resetRecorder();
+		}
+		if (!isRecover) {
+			mret = mr.create();
+			if (mret == media::RECORDER_OK) {
+				printf("#### [MR] create succeeded.\n");
+			} else {
+				printf("#### [MR] create failed.\n");
+				return;
+			}
+		}
+		if (mFlag == 1 && firstTry) {
+			resetRecorder();
 		}
 
 		mret = mr.setDataSource(std::unique_ptr<media::stream::BufferOutputDataSource>(
@@ -284,6 +323,9 @@ private:
 		} else {
 			printf("#### [MR] setDataSource failed.\n");
 			return;
+		}
+		if (mFlag == 2 && firstTry) {
+			resetRecorder();
 		}
 
 		mret = mr.setObserver(shared_from_this());
@@ -299,6 +341,9 @@ private:
 		} else {
 			printf("#### [MR] prepare failed.\n");
 			return;
+		}
+		if (mFlag == 3 && firstTry) {
+			resetRecorder();
 		}
 
 		mr.start();
@@ -321,12 +366,39 @@ private:
 		printf("mp : %x request focus!!\n", &mp);
 		focusManager.requestFocus(mFocusRequest);
 	}
+
+	recorder_result_t resetRecorder(void)
+	{
+		printf("#################################\n");
+		printf("########## reset ################\n");
+		printf("#################################\n");
+		recorder_result_t ret = mr.reset();
+		resetDone = true;
+		firstTry = false;
+		return ret;
+	}
+
+	void recoverCheck(void) {
+		printf("#################################\n");
+		printf("########## recover ##############\n");
+		printf("#################################\n");
+		startRecord(true);
+	}
+
+	void destroyRecorder(void)
+	{
+		mr.destroy();
+	}
 };
 
 extern "C" {
 int wakerec_main(int argc, char *argv[])
 {
 	printf("wakerec_main Entry\n");
+	if (argc == 2) {
+		mFlag = atoi(argv[1]);
+	}
+
 	sd = media::voice::SpeechDetector::instance();
 	if (!sd->initKeywordDetect(16000, 1)) {
 		printf("#### [SD] init failed.\n");
@@ -347,12 +419,13 @@ int wakerec_main(int argc, char *argv[])
 		}
 	}
 	sd->startKeywordDetect();
-	/* similar to wake lock, we release wake lock as we started our thread */
+	// similar to wake lock, we release wake lock as we started our thread
 	pm_resume(PM_IDLE_DOMAIN);
 
 	while (1) {
 		sleep(67);
 	}
+
 	delete[] gBuffer;
 	gBuffer = NULL;
 	return 0;
